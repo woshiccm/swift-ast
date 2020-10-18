@@ -1,9 +1,9 @@
 import Foundation
 
 fileprivate extension UnicodeScalar {
-    var isWhitespace: Bool {
-        return self == " " || self == "\t" || self == "\n" || self == "\r"
-    }
+//    var isWhitespace: Bool {
+//        return self == " " || self == "\t" || self == "\n" || self == "\r"
+//    }
 
     var isAlpha: Bool {
         let alphaChars = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".unicodeScalars)

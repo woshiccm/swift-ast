@@ -138,6 +138,14 @@ public enum TokenKind {
   case stringSegment(String)
   case stringInterpolationAnchor
   case yield
+    
+    init(text: String) {
+        switch text {
+        case Self.eof.text: self = .eof
+        default:
+            self = .unknown("")
+        }
+    }
 
   /// The textual representation of this token kind.
   public var text: String {

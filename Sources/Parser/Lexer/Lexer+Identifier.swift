@@ -4,16 +4,33 @@ extension Lexer {
     
     /// Is the operator beginning at the given character "left-bound"?
     func isLeftBound(_ tokBegin: Pointer) -> Bool {
-        let pointer = content.index(before: tokBegin)
-        switch content[pointer] {
-        case " ", "\r", "\n", "\t", "(", "[", "{", ",", ";" , ":", "\0":
+        // don't mess with original scanner
+        var scanner = self.scanner
+        
+        scanner.rewind(to: tokBegin)
+        
+        if scanner.isAtStart { return false }
+        
+        scanner.putback()
+        switch scanner.peek {
+        case " ": fallthrough
+        case "\r": fallthrough
+        case "\n": fallthrough
+        case "\t": fallthrough // whitespace
+        case "(": fallthrough
+        case "[": fallthrough
+        case "{": fallthrough // opening delimiters
+        case ",": fallthrough
+        case ";": fallthrough
+        case ":": fallthrough // expression separators
+        case "\0": // whitespace / last char in file
             return false
+            
         case "/":
-            if pointer != startPointer {
-                return false // End of a slash-star comment, so whitespace.
-            } else {
-                return true
-            }
+            if scanner.isAtStart { return true }
+            scanner.putback()
+            return scanner.peek != "*" // End of a slash-star comment, so whitespace.
+        
         default: return true
         }
     }
@@ -23,20 +40,35 @@ extension Lexer {
     ///
     /// The code-completion point is considered right-bound.
     func isRightBound(_ tokEnd: Pointer, isLeftBound: Bool) -> Bool {
-        switch content[tokEnd] {
-        case " ", "\r", "\n", "\t", ")", "]", "}", ",", ";", ":", "\0":
+        // don't mess with original scanner
+        var scanner = self.scanner
+        
+        scanner.rewind(to: tokEnd)
+        
+        switch scanner.peek {
+        case " ": fallthrough
+        case "\r": fallthrough
+        case "\n": fallthrough
+        case "\t": fallthrough // whitespace
+        case ")": fallthrough
+        case "]": fallthrough
+        case "}": fallthrough // closing delimiters
+        case ",": fallthrough
+        case ";": fallthrough
+        case ":": fallthrough // expression separators
+        case "\0": // whitespace / last char in file
             return false
+        
         case ".":
+            // Prefer the '^' in "x^.y" to be a postfix op, not binary, but the '^' in
+            // "^.y" to be a prefix op, not binary.
             return !isLeftBound
-        case "/":
-            // A following comment counts as whitespace, so this token is not right bound.
-            let pointer = content.index(after: tokEnd)
-            if (content[pointer] == "/" || content[pointer] == "*") {
-                return false
-            } else {
-                return true
-            }
-        default: return true
+            
+        case "/" where (scanner.peekNext == "/" || scanner.peekNext == "*"):
+            return false
+            
+        default:
+            return true
         }
     }
 }
