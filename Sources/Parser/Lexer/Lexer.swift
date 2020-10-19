@@ -13,6 +13,9 @@ public class Lexer {
     
     /// The current trailing trivia for the next token.
     var trailingTrivia: Trivia
+    
+    /// Determine whether this token occurred at the start of a line.
+    var isAtStartOfLine = true
         
     public struct SourceLoc {
         
@@ -34,8 +37,12 @@ public class Lexer {
         trailingTrivia = Trivia.zero
     }
     
-    public func formToken(kind: TokenKind) -> Token {
-        return formToken(kind: .eof)
+    private func formToken(kind: TokenKind, from start: String.UnicodeScalarIndex) -> Token {
+        return formToken(kind: kind, with: scanner.text(from: start))
+    }
+    
+    private func formToken(kind: TokenKind, with text: String) -> Token {
+        return Token(kind: kind, text: text)
     }
     
     public func lex() {
@@ -44,7 +51,7 @@ public class Lexer {
     
     public func lexImpl() -> Token {
         guard !scanner.isAtEnd else {
-            return formToken(kind: .eof)
+            return formToken(kind: .eof, with: "")
         }
         leadingTrivia = Trivia.zero
         trailingTrivia = Trivia.zero
@@ -60,23 +67,30 @@ public class Lexer {
         case " ", "\t":
             print("Whitespaces should be eaten by lexTrivia as LeadingTrivia")
             
-        case "@": return formToken(kind: .atSign)
-        case "{": return formToken(kind: .leftBrace)
-        case "[": return formToken(kind: .leftSquareBracket)
-        case "(": return formToken(kind: .leftParen)
-        case "}": return formToken(kind: .rightBrace)
-        case "]": return formToken(kind: .rightSquareBracket)
-        case ")": return formToken(kind: .rightParen)
+        case "@": return formToken(kind: .atSign, from: tokStart)
+        case "{": return formToken(kind: .leftBrace, from: tokStart)
+        case "[": return formToken(kind: .leftSquareBracket, from: tokStart)
+        case "(": return formToken(kind: .leftParen, from: tokStart)
+        case "}": return formToken(kind: .rightBrace, from: tokStart)
+        case "]": return formToken(kind: .rightSquareBracket, from: tokStart)
+        case ")": return formToken(kind: .rightParen, from: tokStart)
             
-        case ",": return formToken(kind: .comma)
-        case ";": return formToken(kind: .semicolon)
-        case ":": return formToken(kind: .colon)
-        case "\\": return formToken(kind: .backslash)
+        case ",": return formToken(kind: .comma, from: tokStart)
+        case ";": return formToken(kind: .semicolon, from: tokStart)
+        case ":": return formToken(kind: .colon, from: tokStart)
+        case "\\": return formToken(kind: .backslash, from: tokStart)
             
         case "#":
             return lexHash()
             
         case "/":
+            if scanner.match("/") { // "//"
+                skipSlashSlashComment(eatNewline: true)
+                return lexImpl()
+            } else if scanner.match("*") { // "/*"
+                skipSlashStarComment()
+                return lexImpl()
+            }
             return lexOperatorIdentifier()
         case "%":
             return lexOperatorIdentifier()
@@ -104,7 +118,7 @@ public class Lexer {
             break
         }
         
-        return formToken(kind: .eof)
+        return formToken(kind: .unknown(""), from: tokStart)
     }
     
     public func lexTrivia(pieces: inout Trivia) {
@@ -115,23 +129,72 @@ public class Lexer {
     /// If EatNewLine is true, CurPtr will be at end of newline character.
     /// Otherwise, CurPtr will be at newline character.
     public func skipToEndOfLine(eatNewline: Bool) {
+        let isEOL = advanceToEndOfLine()
         
+        if eatNewline && isEOL {
+            scanner.advance()
+            isAtStartOfLine = true
+        }
+    }
+    
+    public func advanceToEndOfLine() -> Bool {
+        while !scanner.isAtEnd {
+            switch scanner.advance() {
+            case "\n", "\r":
+                scanner.putback()
+                return true
+            default:
+                break
+            }
+        }
+        return false
     }
     
     /// Skip to the end of the line of a // comment.
     public func skipSlashSlashComment(eatNewline: Bool) {
-        
+        return skipToEndOfLine(eatNewline: eatNewline)
     }
     
     /// Skip a #! hashbang line.
     public func skipHashbang(eatNewline: Bool) {
-        
+        skipToEndOfLine(eatNewline: eatNewline)
     }
     
     /// skipSlashStarComment - /**/ comments are skipped (treated as whitespace).
     /// Note that (unlike in C) block comments can be nested.
     public func skipSlashStarComment() {
+        let isMultiline = skipToEndOfSlashStarComment()
+        if isMultiline {
+            isAtStartOfLine = true
+        }
+    }
+    
+    public func skipToEndOfSlashStarComment() -> Bool {
+        // Make sure to advance over the * so that we don't incorrectly handle /*/ as
+        // the beginning and end of the comment.
+        scanner.advance()
         
+        // /**/ comments can be nested, keep track of how deep we've gone.
+        var depth: Int = 1
+        var isMultiline = false
+        
+        while !scanner.isAtEnd {
+            switch scanner.advance() {
+            case "*" where scanner.match("/"):
+                depth -= 1
+                if depth == 0 { return isMultiline }
+                break
+            case "/" where scanner.match("*"):
+                depth += 1
+            case "\n", "\r":
+                isMultiline = true
+            default:
+                break
+            }
+        }
+        
+        // Otherwise, we have an unterminated /* comment.
+        return isMultiline
     }
     
     /// lexHash - Handle #], #! for shebangs, and the family of #identifiers.
@@ -149,23 +212,23 @@ public class Lexer {
         // Map the character sequence onto
         let identifier = scanner.text(from: tmpPtr)
         switch identifier {
-        case "if": return formToken(kind: .poundIfKeyword)
-        case "else": return formToken(kind: .poundElseKeyword)
-        case "elseif": return formToken(kind: .poundElseifKeyword)
-        case "endif": return formToken(kind: .poundEndifKeyword)
-        case "keyPath": return formToken(kind: .poundKeyPathKeyword)
-        case "line": return formToken(kind: .poundLineKeyword)
-        case "sourceLocation": return formToken(kind: .poundSourceLocationKeyword)
-        case "selector": return formToken(kind: .poundSelectorKeyword)
-        case "file": return formToken(kind: .poundFileKeyword)
-        case "column": return formToken(kind: .poundColumnKeyword)
-        case "function": return formToken(kind: .poundFunctionKeyword)
-        case "dsohandle": return formToken(kind: .poundDsohandleKeyword)
+        case "if": return formToken(kind: .poundIfKeyword, from: tmpPtr)
+        case "else": return formToken(kind: .poundElseKeyword, from: tmpPtr)
+        case "elseif": return formToken(kind: .poundElseifKeyword, from: tmpPtr)
+        case "endif": return formToken(kind: .poundEndifKeyword, from: tmpPtr)
+        case "keyPath": return formToken(kind: .poundKeyPathKeyword, from: tmpPtr)
+        case "line": return formToken(kind: .poundLineKeyword, from: tmpPtr)
+        case "sourceLocation": return formToken(kind: .poundSourceLocationKeyword, from: tmpPtr)
+        case "selector": return formToken(kind: .poundSelectorKeyword, from: tmpPtr)
+        case "file": return formToken(kind: .poundFileKeyword, from: tmpPtr)
+        case "column": return formToken(kind: .poundColumnKeyword, from: tmpPtr)
+        case "function": return formToken(kind: .poundFunctionKeyword, from: tmpPtr)
+        case "dsohandle": return formToken(kind: .poundDsohandleKeyword, from: tmpPtr)
         default:
             // Otherwise, unwind the parser to identifier found and just return a .pound token.
             scanner.rewind(to: tmpPtr)
             scanner.advance() // over the pound
-            return formToken(kind: .pound)
+            return formToken(kind: .pound, from: tmpPtr)
         }
     }
     
@@ -181,9 +244,9 @@ public class Lexer {
         let text = scanner.text(from: tokStart)
         let kind = TokenKind(text: text)
         if kind.isKeyword {
-            return formToken(kind: kind)
+            return formToken(kind: kind, with: text)
         }
-        return formToken(kind: .identifier(text))
+        return formToken(kind: .identifier(text), with: text)
     }
     
     /// lexDollarIdent - Match $[0-9a-zA-Z_$]+
@@ -207,13 +270,13 @@ public class Lexer {
         
         let text = scanner.text(from: tokStart)
         if text.count == 1 {
-            return formToken(kind: .identifier(text))
+            return formToken(kind: .identifier(text), with: text)
         }
         
         if !isAllDigits {
-            return formToken(kind: .identifier(text))
+            return formToken(kind: .identifier(text), with: text)
         } else {
-            return formToken(kind: .dollarIdentifier(text))
+            return formToken(kind: .dollarIdentifier(text), with: text)
         }
     }
     
@@ -249,15 +312,15 @@ public class Lexer {
         let text = scanner.text(from: tokStart)
         switch text {
         case "=":
-            return formToken(kind: .equal)
+            return formToken(kind: .equal, with: text)
         case "&" where !(leftBound == rightBound || leftBound):
-            return formToken(kind: .prefixAmpersand)
+            return formToken(kind: .prefixAmpersand, with: text)
         case ".":
             if  (leftBound == rightBound) {
-                return formToken(kind: .period)
+                return formToken(kind: .period, with: text)
             }
             if (rightBound) {
-                return formToken(kind: .prefixPeriod)
+                return formToken(kind: .prefixPeriod, with: text)
             }
             
             // If left bound but not right bound, handle some likely situations.
@@ -276,27 +339,27 @@ public class Lexer {
                 && afterHorzWhitespace.peek != "/" {
                 // FIXME: make a fixit suggestion to remove whitespace between
                 // the "." and the end of horizontal whitespace
-                return formToken(kind: .period)
+                return formToken(kind: .period, with: text)
             }
             
             // Otherwise, it is probably a missing member.
-            return formToken(kind: .unknown(text))
+            return formToken(kind: .unknown(text), from: tokStart)
         case "?":
             if leftBound {
-                return formToken(kind: .postfixQuestionMark)
+                return formToken(kind: .postfixQuestionMark, with: text)
             }
-            return formToken(kind: .postfixQuestionMark)
+            return formToken(kind: .postfixQuestionMark, with: text)
         case "->":
-            return formToken(kind: .arrow)
+            return formToken(kind: .arrow, with: text)
         case "*/":
-            return formToken(kind: .unknown(text))
+            return formToken(kind: .unknown(text), with: text)
         case _ where text.count > 2:
             var finder = Scanner(text)
             // Verify there is no "*/" in the middle of the identifier token, we reject
             // it as potentially ending a block comment.
             finder.skip { $0 != "*"}
             if finder.peekNext == "/" {
-                return formToken(kind: .unknown(text))
+                return formToken(kind: .unknown(text), with: text)
             }
             
         default: break
@@ -304,18 +367,18 @@ public class Lexer {
         
         switch (leftBound, rightBound) {
         case (true, true):
-            return formToken(kind: .unspacedBinaryOperator(text))
+            return formToken(kind: .unspacedBinaryOperator(text), with: text)
         case (false, false):
-            return formToken(kind: .spacedBinaryOperator(text))
+            return formToken(kind: .spacedBinaryOperator(text), with: text)
         case (true, false):
-            return formToken(kind: .postfixOperator(text))
+            return formToken(kind: .postfixOperator(text), with: text)
         case (false, true):
-            return formToken(kind: .prefixOperator(text))
+            return formToken(kind: .prefixOperator(text), with: text)
         }
     }
     
     public func lexHexNumber() -> Token {
-        return formToken(kind: .eof)
+        return formToken(kind: .eof, with: "")
     }
     
     /// lexNumber:
@@ -329,7 +392,7 @@ public class Lexer {
     ///   floating_literal ::= 0x[0-9A-Fa-f][0-9A-Fa-f_]*
     ///                          (\.[0-9A-Fa-f][0-9A-Fa-f_]*)?[pP][+-]?[0-9][0-9_]*
     public func lexNumber() -> Token {
-        return formToken(kind: .eof)
+        return formToken(kind: .eof, with: "")
     }
     
     /// lexStringLiteral:
@@ -337,7 +400,7 @@ public class Lexer {
     ///   string_literal ::= ["]["]["].*["]["]["] - approximately
     ///   string_literal ::= (#+)("")?".*"(\2\1) - "raw" strings
     public func lexStringLiteral() -> Token {
-        return formToken(kind: .eof)
+        return formToken(kind: .eof, with: "")
     }
     
     /// lexEscapedIdentifier:
@@ -354,7 +417,7 @@ public class Lexer {
             
             // If we have the terminating "`", it's an escaped identifier.
             if scanner.match("`") {
-                return formToken(kind: .identifier(""))
+                return formToken(kind: .identifier(""), from: quote)
             }
         }
         
@@ -364,10 +427,10 @@ public class Lexer {
             scanner.advance() // advance over "`"
             
             // FIXME: mark it as an escaped identifier?
-            return formToken(kind: .identifier(""))
+            return formToken(kind: .identifier(""), from: quote)
         }
         
-        return formToken(kind: .backtick)
+        return formToken(kind: .backtick, from: quote)
     }
     
     public func resetToOffset(_ offset: Int) {
