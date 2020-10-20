@@ -11,7 +11,7 @@ public struct UnknownNode: ASTNodeProtocol {
 
 public struct TokenNode: ASTNodeProtocol {
     public var text: String {
-        return tokenKind.text
+        return ""
     }
     public let tokenKind: TokenKind
 }

@@ -32,7 +32,7 @@ public class Lexer {
         self.source = source
         self.content = source.unicodeScalars
         self.scanner = Scanner(source)
-        self.nextToken = Token(kind: .unknown(""), text: "")
+        self.nextToken = Token(kind: .unknown, text: "")
         leadingTrivia = Trivia.zero
         trailingTrivia = Trivia.zero
     }
@@ -118,7 +118,7 @@ public class Lexer {
             break
         }
         
-        return formToken(kind: .unknown(""), from: tokStart)
+        return formToken(kind: .unknown, from: tokStart)
     }
     
     public func lexTrivia(pieces: inout Trivia) {
@@ -246,7 +246,7 @@ public class Lexer {
         if kind.isKeyword {
             return formToken(kind: kind, with: text)
         }
-        return formToken(kind: .identifier(text), with: text)
+        return formToken(kind: .identifier, with: text)
     }
     
     /// lexDollarIdent - Match $[0-9a-zA-Z_$]+
@@ -270,13 +270,13 @@ public class Lexer {
         
         let text = scanner.text(from: tokStart)
         if text.count == 1 {
-            return formToken(kind: .identifier(text), with: text)
+            return formToken(kind: .identifier, with: text)
         }
         
         if !isAllDigits {
-            return formToken(kind: .identifier(text), with: text)
+            return formToken(kind: .identifier, with: text)
         } else {
-            return formToken(kind: .dollarIdentifier(text), with: text)
+            return formToken(kind: .dollarIdentifier, with: text)
         }
     }
     
@@ -343,7 +343,7 @@ public class Lexer {
             }
             
             // Otherwise, it is probably a missing member.
-            return formToken(kind: .unknown(text), from: tokStart)
+            return formToken(kind: .unknown, from: tokStart)
         case "?":
             if leftBound {
                 return formToken(kind: .postfixQuestionMark, with: text)
@@ -352,14 +352,14 @@ public class Lexer {
         case "->":
             return formToken(kind: .arrow, with: text)
         case "*/":
-            return formToken(kind: .unknown(text), with: text)
+            return formToken(kind: .unknown, with: text)
         case _ where text.count > 2:
             var finder = Scanner(text)
             // Verify there is no "*/" in the middle of the identifier token, we reject
             // it as potentially ending a block comment.
             finder.skip { $0 != "*"}
             if finder.peekNext == "/" {
-                return formToken(kind: .unknown(text), with: text)
+                return formToken(kind: .unknown, with: text)
             }
             
         default: break
@@ -367,18 +367,112 @@ public class Lexer {
         
         switch (leftBound, rightBound) {
         case (true, true):
-            return formToken(kind: .unspacedBinaryOperator(text), with: text)
+            return formToken(kind: .unspacedBinaryOperator, with: text)
         case (false, false):
-            return formToken(kind: .spacedBinaryOperator(text), with: text)
+            return formToken(kind: .spacedBinaryOperator, with: text)
         case (true, false):
-            return formToken(kind: .postfixOperator(text), with: text)
+            return formToken(kind: .postfixOperator, with: text)
         case (false, true):
-            return formToken(kind: .prefixOperator(text), with: text)
+            return formToken(kind: .prefixOperator, with: text)
         }
     }
     
     public func lexHexNumber() -> Token {
-        return formToken(kind: .eof, with: "")
+        scanner.putback()
+        let tokStart = scanner.current
+        
+        func expectedDigit() -> Token {
+            scanner.skip { $0.isIdentifierBody }
+            return formToken(kind: .unknown, from: tokStart)
+        }
+        
+        func expectedHexDigit() -> Token {
+            // FIXME: diagnose invalid digit in int literal
+            return expectedDigit()
+        }
+        
+        scanner.advance() // skip over 0
+        scanner.advance() // skip over x
+        
+        // 0x[0-9a-fA-F][0-9a-fA-F_]*
+        if !scanner.match({ $0.isHexDigit }) {
+            return expectedHexDigit()
+        }
+        
+        scanner.skip { $0.isHexDigit || $0 == "_" }
+        
+        if scanner.peek != "." && scanner.peek != "p" && scanner.peek != "P" {
+            if scanner.match({ $0.isIdentifierBody }) {
+                return expectedHexDigit()
+            }
+            return formToken(kind: .integerLiteral, from: tokStart)
+        }
+        
+        var ptrOnDot: Scanner?
+        
+        // (\.[0-9A-Fa-f][0-9A-Fa-f_]*)?
+        if scanner.peek == "." {
+            ptrOnDot = scanner
+            
+            scanner.advance()
+            
+            // If the character after the '.' is not a digit, assume we have an int
+            // literal followed by a dot expression.
+            if !scanner.peek.isHexDigit {
+                scanner.putback()
+                return formToken(kind: .integerLiteral, from: tokStart)
+            }
+            
+            scanner.skip { $0.isHexDigit || $0 == "_" }
+            
+            if scanner.peek != "p" && scanner.peek != "P" {
+                if !ptrOnDot!.peekNext.isDigit {
+                    // e.g: 0xff.description
+                    scanner = ptrOnDot!
+                    return formToken(kind: .integerLiteral, from: tokStart)
+                }
+                return formToken(kind: .unknown, from: tokStart)
+            }
+        }
+        
+        // [pP][+-]?[0-9][0-9_]*
+        assert(scanner.peek == "p" || scanner.peek == "P", "not at a hex float exponent?!")
+        scanner.advance() // skip over p or P
+        
+        let signedExponent = scanner.match{ $0 == "+" || $0 == "-" }
+        
+        if !scanner.peek.isDigit {
+            if let onDot = ptrOnDot, !onDot.peekNext.isDigit && !signedExponent {
+                // e.g: 0xff.fpValue, 0xff.fp
+                scanner = onDot
+                return formToken(kind: .integerLiteral, from: tokStart)
+            }
+        }
+        // Note: 0xff.fp+otherExpr can be valid expression. But we don't accept it.
+
+        // There are 3 cases to diagnose if the exponent starts with a non-digit:
+        // identifier (invalid character), underscore (invalid first character),
+        // non-identifier (empty exponent)
+        if scanner.match({ $0.isIdentifierBody }) {
+            // FIXME: diagnose invalid digit in fp exponent
+            return expectedDigit()
+        } else {
+            // FIXME: diagnose expected digit in fp exponent
+            return expectedDigit()
+        }
+        
+        scanner.skip { $0.isDigit || $0 == "_" }
+        
+        if scanner.match({ $0.isIdentifierBody }) {
+            // FIXME: diagnose invalid digit in fp exponent
+            return expectedDigit()
+        }
+        
+        return formToken(kind: .floatingLiteral, from: tokStart)
+    }
+    
+    private enum ExpectedDigitKind {
+        case binary, octal, decimal, hex
     }
     
     /// lexNumber:
@@ -392,7 +486,113 @@ public class Lexer {
     ///   floating_literal ::= 0x[0-9A-Fa-f][0-9A-Fa-f_]*
     ///                          (\.[0-9A-Fa-f][0-9A-Fa-f_]*)?[pP][+-]?[0-9][0-9_]*
     public func lexNumber() -> Token {
-        return formToken(kind: .eof, with: "")
+        scanner.putback()
+        let tokStart = scanner.current
+        assert(scanner.peek.isDigit || scanner.peek == ".", "Unexpected start")
+        
+        func expectedDigit() -> Token {
+            scanner.skip { $0.isIdentifierBody }
+            return formToken(.unknown, from: start)
+        }
+        
+        func expectedIntDigit(_ digitKind: ExpectedDigitKind) -> Token {
+            // FIXME: diagnose invalid digit in int literal
+            return expectedDigit()
+        }
+        
+        if scanner.peek == "0" && scanner.peekNext == "x" {
+            return lexHexNumber()
+        }
+        
+        if scanner.peek == "0" && scanner.peekNext == "o" {
+            // 0o[0-7][0-7_]*
+            scanner.advance() // advance over "0"
+            scanner.advance() // advance over "o"
+            
+            if scanner.peek < "0" || scanner.peek > "7" {
+                return expectedIntDigit(.octal)
+            }
+            
+            scanner.skip { ($0 >= "0" && $0 <= "7") || $0 == "_" }
+            
+            if scanner.match({ $0.isIdentifierBody }) {
+                return expectedIntDigit(.octal)
+            }
+            
+            return formToken(kind: .integerLiteral, from: tokStart)
+        }
+        
+        if scanner.peek == "0" && scanner.peekNext == "b" {
+            // 0b[01][01_]*
+            scanner.advance() // advance over "0"
+            scanner.advance() // advance over "b"
+            
+            if scanner.peek != "0" && scanner.peek != "1" {
+                return expectedIntDigit(.binary)
+            }
+            
+            scanner.skip(over: ["0", "1", "_"])
+            
+            if scanner.match({ $0.isIdentifierBody }) {
+                return expectedIntDigit(.octal)
+            }
+            
+            return formToken(kind: .integerLiteral, from: tokStart)
+        }
+        
+        // Handle a leading [0-9]+, lexing an integer or falling through if we have a
+        // floating point value.
+        scanner.skip { $0.isDigit || $0 == "_" }
+        
+        // Lex things like 4.x as '4' followed by a tok::period.
+        if scanner.peek == "." {
+            // NextToken is the soon to be previous token
+            // Therefore: x.0.1 is sub-tuple access, not x.float_literal
+            if !scanner.peekNext.isDigit || nextToken.kind == .period {
+                return formToken(kind: .integerLiteral, from: tokStart)
+            }
+        } else {
+            // Floating literals must have '.', 'e', or 'E' after digits.  If it is
+            // something else, then this is the end of the token.
+            if scanner.peek != "e" && scanner.peek != "E" {
+                if scanner.match({ $0.isIdentifierBody }) {
+                    return expectedIntDigit(.octal)
+                }
+                return formToken(kind: .integerLiteral, from: tokStart)
+            }
+        }
+        
+        // Lex decimal point.
+        if scanner.match(".") {
+            scanner.skip { $0.isDigit || $0 == "_" }
+        }
+        
+        // Lex exponent.
+        if scanner.match({ $0 == "e" || $0 == "E" }) {
+            _ = scanner.match({ $0 == "+" || $0 == "-" })
+            
+            if !scanner.peek.isDigit {
+                // There are 3 cases to diagnose if the exponent starts with a non-digit:
+                // identifier (invalid character), underscore (invalid first character),
+                // non-identifier (empty exponent)
+                return expectedDigit()
+            }
+            
+            scanner.skip { $0.isDigit || $0 == "_" }
+            
+            if scanner.match({ $0.isIdentifierBody }) {
+                // FIXME: diagnose invalid digit in fp exponent
+                return expectedDigit()
+            }
+        }
+        
+        return formToken(kind: .floatingLiteral, from: tokStart)
+    }
+    
+    ///   unicode_character_escape ::= [\]u{hex+}
+    ///   hex                      ::= [0-9a-fA-F]
+    public func lexUnicodeEscape() {
+        
     }
     
     /// lexStringLiteral:
@@ -417,7 +617,7 @@ public class Lexer {
             
             // If we have the terminating "`", it's an escaped identifier.
             if scanner.match("`") {
-                return formToken(kind: .identifier(""), from: quote)
+                return formToken(kind: .identifier, from: quote)
             }
         }
         
@@ -427,7 +627,7 @@ public class Lexer {
             scanner.advance() // advance over "`"
             
             // FIXME: mark it as an escaped identifier?
-            return formToken(kind: .identifier(""), from: quote)
+            return formToken(kind: .identifier, from: quote)
         }
         
         return formToken(kind: .backtick, from: quote)
