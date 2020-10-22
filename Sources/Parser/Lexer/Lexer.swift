@@ -110,7 +110,7 @@ public class Lexer {
             return lexDollarIdent()
         case "0"..."9":
             return lexNumber()
-        case "\"":
+        case "\"", "'":
             return lexStringLiteral()
         case "`":
             return lexEscapedIdentifier()
@@ -122,6 +122,14 @@ public class Lexer {
     }
     
     public func lexTrivia(pieces: inout Trivia) {
+        let triviaStart = scanner.current
+        
+        switch scanner.advance() {
+        case "\n":
+            isAtStartOfLine = true
+        default:
+            break
+        }
         
     }
     
@@ -447,18 +455,19 @@ public class Lexer {
                 scanner = onDot
                 return formToken(kind: .integerLiteral, from: tokStart)
             }
-        }
-        // Note: 0xff.fp+otherExpr can be valid expression. But we don't accept it.
+            
+            // Note: 0xff.fp+otherExpr can be valid expression. But we don't accept it.
 
-        // There are 3 cases to diagnose if the exponent starts with a non-digit:
-        // identifier (invalid character), underscore (invalid first character),
-        // non-identifier (empty exponent)
-        if scanner.match({ $0.isIdentifierBody }) {
-            // FIXME: diagnose invalid digit in fp exponent
-            return expectedDigit()
-        } else {
-            // FIXME: diagnose expected digit in fp exponent
-            return expectedDigit()
+            // There are 3 cases to diagnose if the exponent starts with a non-digit:
+            // identifier (invalid character), underscore (invalid first character),
+            // non-identifier (empty exponent)
+            if scanner.match({ $0.isIdentifierBody }) {
+                // FIXME: diagnose invalid digit in fp exponent
+                return expectedDigit()
+            } else {
+                // FIXME: diagnose expected digit in fp exponent
+                return expectedDigit()
+            }
         }
         
         scanner.skip { $0.isDigit || $0 == "_" }
@@ -492,7 +501,7 @@ public class Lexer {
         
         func expectedDigit() -> Token {
             scanner.skip { $0.isIdentifierBody }
-            return formToken(.unknown, from: start)
+            return formToken(kind: .unknown, from: tokStart)
         }
         
         func expectedIntDigit(_ digitKind: ExpectedDigitKind) -> Token {
@@ -595,11 +604,79 @@ public class Lexer {
         
     }
     
+    /// skipToEndOfInterpolatedExpression - Given the first character after a \(
+    /// sequence in a string literal (the start of an interpolated expression),
+    /// scan forward to the end of the interpolated expression and return the end.
+    /// On success, the returned pointer will point to the ')' at the end of the
+    /// interpolated expression.  On failure, it will point to the first character
+    /// that cannot be lexed as part of the interpolated expression; this character
+    /// will never be ')'.
+    ///
+    /// This function performs brace and quote matching, keeping a stack of
+    /// outstanding delimiters as it scans the string.
+    func skipToEndOfInterpolatedExpression(isMultilineString: Bool) {
+        
+        
+    }
+    
+    /// advanceIfMultilineDelimiter - Centralized check for multiline delimiter.
+    func advanceIfMultilineDelimiter(curPtr: inout Scanner) -> Bool {
+        if curPtr.peekBack == "\"" && scanner.peek == "\"" && scanner.peekNext == "\"" {
+            curPtr.advance()
+            curPtr.advance()
+            return true
+        }
+        return false
+    }
+    
+    func lexCharacter(stopQuote: UnicodeScalar, isMultilineString: Bool) {
+        
+    }
+    
     /// lexStringLiteral:
     ///   string_literal ::= ["]([^"\\\n\r]|character_escape)*["]
     ///   string_literal ::= ["]["]["].*["]["]["] - approximately
     ///   string_literal ::= (#+)("")?".*"(\2\1) - "raw" strings
     public func lexStringLiteral() -> Token {
+        scanner.putback()
+        let tokStart = scanner.current
+        let quoteChar = scanner.advance()
+        
+        // NOTE: We only allow single-quote string literals so we can emit useful
+        // diagnostics about changing them to double quotes.
+        assert(quoteChar == "\"" || quoteChar == "'", "Unexpected start")
+        let isMultilineString = advanceIfMultilineDelimiter(curPtr: &scanner)
+        if isMultilineString && scanner.peek == "\n" && scanner.peek == "\r" {
+            // FIXME: diagnose illegal multiline string start, fixit: insert \n
+        }
+        
+        var wasErroneous = false
+        while true {
+            if (scanner.peek == "\\" && scanner.peekNext == "(") {
+                scanner.advance() // skip the "\"
+                scanner.advance() // skip the "("
+                // Consume tokens until we hit the corresponding ')'.
+                skipToEndOfInterpolatedExpression(isMultilineString: isMultilineString)
+                
+                if (scanner.peek == ")") {
+                    // Successfully scanned the body of the expression literal.
+                    scanner.advance()
+                } else if (scanner.peek == "\r" || scanner.peek == "\n") && isMultilineString {
+                    // The only case we reach here is unterminated single line string in the
+                    // interpolation. For better recovery, go on after emitting an error.
+                    wasErroneous = true
+                } else {
+                    return formToken(kind: .unknown, from: tokStart)
+                }
+            }
+            
+            // String literals cannot have \n or \r in them (unless multiline).
+            if (scanner.peek == "\r" || scanner.peek == "\n" && !isMultilineString) || scanner.isAtEnd {
+                // FIXME: diagnose unterminated string
+                return formToken(kind: .unknown, from: tokStart)
+            }
+        }
+        
         return formToken(kind: .eof, with: "")
     }
     
@@ -631,13 +708,5 @@ public class Lexer {
         }
         
         return formToken(kind: .backtick, from: quote)
-    }
-    
-    public func resetToOffset(_ offset: Int) {
-        
-    }
-    
-    public func restoreState(_ state: LexerState) {
-        
     }
 }
