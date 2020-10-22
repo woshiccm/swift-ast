@@ -22,6 +22,12 @@ struct Scanner {
     }
     
     var peekNext: UnicodeScalar {
+        let back = source.unicodeScalars.index(before: current)
+        if back <= source.unicodeScalars.startIndex { return "\0" }
+        return source.unicodeScalars[back]
+    }
+    
+    var peekBack: UnicodeScalar {
         let next = source.unicodeScalars.index(after: current)
         if next >= source.unicodeScalars.endIndex { return "\0" }
         return source.unicodeScalars[next]
