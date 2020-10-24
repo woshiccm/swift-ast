@@ -28,6 +28,14 @@ public class Lexer {
     /// The source code to be lexed
     private let source: String
     
+    public convenience init(url: URL) {
+        let fileData = try? Data(contentsOf: url)
+        let source = fileData?.withUnsafeBytes { buf in
+          return String.fromBuffer(buf.bindMemory(to: UInt8.self))
+        } ?? ""
+        self.init(source: source)
+    }
+    
     public init(source: String) {
         self.source = source
         self.content = source.unicodeScalars
@@ -56,7 +64,7 @@ public class Lexer {
         leadingTrivia = Trivia.zero
         trailingTrivia = Trivia.zero
         
-        lexTrivia(pieces: &leadingTrivia)
+        //lexTrivia(pieces: &leadingTrivia)
         
         let tokStart = scanner.current
         let char = scanner.advance()
@@ -84,10 +92,10 @@ public class Lexer {
             return lexHash()
             
         case "/":
-            if scanner.match("/") { // "//"
+            if scanner.peek == "/" { // "//"
                 skipSlashSlashComment(eatNewline: true)
                 return lexImpl()
-            } else if scanner.match("*") { // "/*"
+            } else if scanner.peek == "*" { // "/*"
                 skipSlashStarComment()
                 return lexImpl()
             }
@@ -145,6 +153,7 @@ public class Lexer {
         }
     }
     
+    
     public func advanceToEndOfLine() -> Bool {
         while !scanner.isAtEnd {
             switch scanner.advance() {
@@ -160,6 +169,7 @@ public class Lexer {
     
     /// Skip to the end of the line of a // comment.
     public func skipSlashSlashComment(eatNewline: Bool) {
+        assert(scanner.peekBack == "/" && scanner.peek == "/", "Not a // comment")
         return skipToEndOfLine(eatNewline: eatNewline)
     }
     
@@ -621,7 +631,7 @@ public class Lexer {
     
     /// advanceIfMultilineDelimiter - Centralized check for multiline delimiter.
     func advanceIfMultilineDelimiter(curPtr: inout Scanner) -> Bool {
-        if curPtr.peekBack == "\"" && scanner.peek == "\"" && scanner.peekNext == "\"" {
+        if curPtr.peekBack == "\"" && curPtr.peek == "\"" && curPtr.peekNext == "\"" {
             curPtr.advance()
             curPtr.advance()
             return true
@@ -629,8 +639,103 @@ public class Lexer {
         return false
     }
     
-    func lexCharacter(stopQuote: UnicodeScalar, isMultilineString: Bool) {
+    private struct CharValue: Equatable {
+        private let value: UInt32
         
+        static let error = CharValue(UInt32.max - 1)
+        static let end = CharValue(UInt32.max)
+        
+        init(_ value: UInt32) {
+            self.value = value
+        }
+        
+        init(_ scalar: UnicodeScalar) {
+            self.value = scalar.value
+        }
+        
+        var scalar: UnicodeScalar? {
+            return UnicodeScalar(value)
+        }
+        
+        static func ==(lhs: Lexer.CharValue, rhs: Lexer.CharValue) -> Bool {
+            return lhs.value == rhs.value
+        }
+    }
+    
+    /// lexCharacter - Read a character and return its UTF32 code.  If this is the
+    /// end of enclosing string/character sequence (i.e. the character is equal to
+    /// 'StopQuote'), this returns ~0U and advances 'CurPtr' pointing to the end of
+    /// terminal quote.  If this is a malformed character sequence, it emits a
+    /// diagnostic (when EmitDiagnostics is true) and returns ~1U.
+    ///
+    ///   character_escape  ::= [\][\] | [\]t | [\]n | [\]r | [\]" | [\]' | [\]0
+    ///   character_escape  ::= unicode_character_escape
+    private func lexCharacter(stopQuote: UnicodeScalar, isMultilineString: Bool) -> CharValue {
+        let char = scanner.advance()
+        
+        switch char {
+        case "\"", "'":
+            if stopQuote == char {
+                scanner.putback()
+                return .end
+            }
+            
+            // Otherwise, this is just a character.
+            return CharValue(char)
+            
+        case "\n", "\r": // String literals cannot have \n or \r in them.
+            assert(isMultilineString, "Caller must handle newlines in non-multiline")
+            return CharValue(char)
+            
+        case "\\": // Escapes.
+            break
+        default:
+            // Normal characters are part of the string.
+            // If this is a "high" UTF-8 character, validate it.
+            if !char.isASCII {
+                if !char.isPrintable {
+                    if !isMultilineString && char == "\t" {
+                        // FIXME: diagnose unprintable ascii character
+                    }
+                }
+            }
+            
+            return CharValue(char)
+        }
+        
+        // Escape processing.  We already ate the "\".
+        switch scanner.peek {
+        case " ", "\t", "\n", "\r":
+            if isMultilineString && maybeConsumeNewlineEscape(curPtr: &scanner) {
+                return CharValue("\n")
+            }
+            fallthrough
+        default:
+            <#code#>
+        }
+        
+    }
+    
+    /// maybeConsumeNewlineEscape - Check for valid elided newline escape and
+    /// move pointer passed in to the character after the end of the line.
+    private func maybeConsumeNewlineEscape(curPtr: inout Scanner) -> Bool {
+        var tmpPtr = curPtr
+        while !tmpPtr.isAtEnd {
+            switch tmpPtr.advance() {
+            case " ", "\t":
+                continue
+            case "\r":
+                scanner.match("\n")
+                fallthrough
+            case "\n":
+                curPtr = tmpPtr
+                return true
+            default:
+                return false
+            }
+        }
+        
+        return false
     }
     
     /// lexStringLiteral:
@@ -652,6 +757,8 @@ public class Lexer {
         
         var wasErroneous = false
         while true {
+            // Handle string interpolation.
+            
             if (scanner.peek == "\\" && scanner.peekNext == "(") {
                 scanner.advance() // skip the "\"
                 scanner.advance() // skip the "("
@@ -675,6 +782,9 @@ public class Lexer {
                 // FIXME: diagnose unterminated string
                 return formToken(kind: .unknown, from: tokStart)
             }
+            
+            lexCharacter(stopQuote: quoteChar, isMultilineString: isMultilineString)
+            
         }
         
         return formToken(kind: .eof, with: "")

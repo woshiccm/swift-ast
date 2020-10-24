@@ -10,6 +10,8 @@ let package = Package(
         .library(
             name: "SwiftAST",
             targets: ["SwiftAST"]),
+        .executable(name: "swift-ast",
+                    targets: ["swift-ast"])
     ],
     dependencies: [
         // Dependencies declare other packages that this package depends on.
@@ -24,6 +26,9 @@ let package = Package(
         .target(
             name: "Parser",
             dependencies: ["Base"]),
+        .target(
+            name: "swift-ast",
+            dependencies: ["Parser"]),
         .target(
             name: "Base",
             dependencies: []),
