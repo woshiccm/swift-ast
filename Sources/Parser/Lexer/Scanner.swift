@@ -28,7 +28,7 @@ struct Scanner {
     }
     
     var peekBack: UnicodeScalar {
-        let next = source.unicodeScalars.index(after: current)
+        let next = source.unicodeScalars.index(before: current)
         if next >= source.unicodeScalars.endIndex { return "\0" }
         return source.unicodeScalars[next]
     }
@@ -52,11 +52,11 @@ struct Scanner {
         current = newIdx
     }
     
-    mutating func match(_ expected: UnicodeScalar) -> Bool {
+    @discardableResult mutating func match(_ expected: UnicodeScalar) -> Bool {
         return match { $0 == expected }
     }
     
-    mutating func match(_ filter: (UnicodeScalar) -> Bool) -> Bool {
+    @discardableResult mutating func match(_ filter: (UnicodeScalar) -> Bool) -> Bool {
         if isAtEnd { return false }
         if !filter(peek) { return false }
         
