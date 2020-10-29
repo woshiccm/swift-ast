@@ -7,7 +7,11 @@
 
 import Foundation
 
-let string = "Roy"
+let string = """
+ one space
+  two spaces
+   three spaces
+"""
 
 func test() {
     

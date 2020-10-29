@@ -3,17 +3,20 @@ import Foundation
 struct Scanner {
     private let source: String
     private(set) var current: String.UnicodeScalarIndex
+    let start: String.UnicodeScalarIndex
+    let end: String.UnicodeScalarIndex
+    let contentStart: String.UnicodeScalarIndex
     
     func text(from start: String.UnicodeScalarIndex) -> String {
         return String(source.unicodeScalars[start..<current])
     }
     
     var isAtStart: Bool {
-        return current == source.unicodeScalars.startIndex
+        return current == start
     }
     
     var isAtEnd: Bool {
-        return current >= source.unicodeScalars.endIndex
+        return current >= end
     }
     
     var peek: UnicodeScalar {
@@ -35,7 +38,10 @@ struct Scanner {
     
     init(_ source: String) {
         self.source = source
-        self.current = source.unicodeScalars.startIndex
+        current = source.unicodeScalars.startIndex
+        start = source.unicodeScalars.startIndex
+        end = source.unicodeScalars.endIndex
+        contentStart = source.unicodeScalars.startIndex
     }
     
     @discardableResult mutating func advance() -> UnicodeScalar {
