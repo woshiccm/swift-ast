@@ -64,7 +64,7 @@ public class Lexer {
         leadingTrivia = Trivia.zero
         trailingTrivia = Trivia.zero
         
-        //lexTrivia(pieces: &leadingTrivia)
+        lexTrivia(pieces: &leadingTrivia)
         
         let tokStart = scanner.current
         let char = scanner.advance()
@@ -130,15 +130,81 @@ public class Lexer {
     }
     
     public func lexTrivia(pieces: inout Trivia) {
-        let triviaStart = scanner.current
-        
-        switch scanner.advance() {
-        case "\n":
-            isAtStartOfLine = true
-        default:
-            break
+        let startCharacterOfTokens: Set<UnicodeScalar> = ["@", "{", "[", "(", "}", "]", ")",
+                                                          ",", ";", ":", "\\", "$",
+                                                          "0", "1", "2", "3", "4",
+                                                          "5", "6", "7", "8", "9",
+                                                          "\"", "'", "`"]
+        let startOfOperators: Set<UnicodeScalar> = ["%", "!", "?", "=",
+                                                    "-", "+", "*", "&",
+                                                    "|", "^", "~", "."]
+        loop: while true {
+            let triviaStart = scanner.current
+            
+            let char = scanner.advance()
+            switch char {
+            case "\n":
+                pieces.appending(.newlines(1))
+                isAtStartOfLine = true
+                continue
+            case "\r":
+                isAtStartOfLine = true
+                if scanner.match("\n") {
+                    pieces.appending(.carriageReturnLineFeeds(1))
+                } else {
+                    pieces.appending(.carriageReturns(1))
+                }
+                continue
+            case " ":
+                pieces.appending(.spaces(1))
+                continue
+            case "\t":
+                pieces.appending(.tabs(1))
+                continue
+            case "\u{C}":
+                pieces.appending(.formfeeds(1))
+                continue
+            case "/":
+                if scanner.peek == "/" {
+                    // '// ...' comment.
+                    let isDocComment = scanner.peekNext == "/"
+                    skipSlashSlashComment(eatNewline: false)
+                    continue
+                } else if scanner.peek == "*" {
+                    // '/* ... */' comment.
+                    let isDocComment = scanner.peekNext == "*"
+                    skipSlashStarComment()
+                    continue
+                }
+                break
+            case "#":
+                if triviaStart == scanner.contentStart && scanner.peek == "!" {
+                    // Hashbang '#!/path/to/swift'.
+                    scanner.putback()
+                    skipHashbang(eatNewline: false)
+                    continue
+                }
+                break
+            case "<", ">":
+                if tryLexConflictMarker(eatNewline: false) {
+                    // Conflict marker.
+                    continue
+                }
+                break loop
+            // Start character of tokens.
+            case _ where startCharacterOfTokens.contains(char):
+                break loop
+            // Start of identifiers.
+            case "a"..."z", "A"..."Z", "_":
+                break loop
+            // Start of operators.
+            case _ where startOfOperators.contains(char):
+                break loop
+            default:
+                continue
+            }
         }
-        
+        scanner.putback()
     }
     
     /// Advance to the end of the line.
@@ -610,8 +676,27 @@ public class Lexer {
     
     ///   unicode_character_escape ::= [\]u{hex+}
     ///   hex                      ::= [0-9a-fA-F]
-    public func lexUnicodeEscape() {
+    private func lexUnicodeEscape() -> CharValue {
+        assert(scanner.peek == "{", "Invalid unicode escape")
+        scanner.advance()
         
+        let digitStart = scanner.current
+        
+        scanner.skip { $0.isHexDigit }
+        
+        if scanner.peek != "}" {
+            return .error
+        }
+        let digits = scanner.text(from: digitStart)
+        
+        scanner.advance()
+        
+        if digits.count < 1 || digits.count > 8 {
+            // FIXME: diagnose invalid u escape
+            return .error
+        }
+        
+        return CharValue(UInt32(digits, radix: 16)!)
     }
     
     /// skipToEndOfInterpolatedExpression - Given the first character after a \(
@@ -676,7 +761,9 @@ public class Lexer {
         switch char {
         case "\"", "'":
             if stopQuote == char {
-                scanner.putback()
+                if isMultilineString && !advanceIfMultilineDelimiter(curPtr: &scanner) {
+                    return CharValue("\"")
+                }
                 return .end
             }
             
@@ -705,15 +792,45 @@ public class Lexer {
         
         // Escape processing.  We already ate the "\".
         switch scanner.peek {
+        // Simple single-character escapes.
+        case "0": scanner.advance(); return CharValue("\0")
+        case "n": scanner.advance(); return CharValue("\n")
+        case "r": scanner.advance(); return CharValue("\r")
+        case "t": scanner.advance(); return CharValue("\t")
+        case "\"": scanner.advance(); return CharValue("\"")
+        case "'": scanner.advance(); return CharValue("'")
+        case "\\": scanner.advance(); return CharValue("\\")
+            
+        case "u": //  \u HEX HEX HEX HEX
+            scanner.advance()
+            if scanner.peek != "{" {
+                return .error
+            }
+            
+            let charValue = lexUnicodeEscape()
+            if charValue == .error {
+                return .error
+            }
+            
+            // Check to see if the encoding is valid.
+            guard let _ = charValue.scalar else {
+                // FIXME diagnose invalid scalar
+                return .error
+            }
+            
+            return charValue
+        
         case " ", "\t", "\n", "\r":
             if isMultilineString && maybeConsumeNewlineEscape(curPtr: &scanner) {
                 return CharValue("\n")
             }
             fallthrough
-        default:
-            <#code#>
+        default: // Invalid escape.
+          // If this looks like a plausible escape character, recover as though this
+          // is an invalid escape.
+            scanner.match { $0.isAlphanumeric }
+            return .error
         }
-        
     }
     
     /// maybeConsumeNewlineEscape - Check for valid elided newline escape and
@@ -736,6 +853,11 @@ public class Lexer {
         }
         
         return false
+    }
+    
+    private func formStringLiteralToken(tokStart: String.UnicodeScalarIndex,
+                                        isMultilineString: Bool) -> Token {
+        return formToken(kind: .stringLiteral, from: tokStart)
     }
     
     /// lexStringLiteral:
@@ -783,11 +905,25 @@ public class Lexer {
                 return formToken(kind: .unknown, from: tokStart)
             }
             
-            lexCharacter(stopQuote: quoteChar, isMultilineString: isMultilineString)
+            let charValue = lexCharacter(stopQuote: quoteChar, isMultilineString: isMultilineString)
+            // This is the end of string, we are done.
+            if charValue == .end {
+                break
+            }
             
+            // Remember we had already-diagnosed invalid characters.
+            wasErroneous = wasErroneous || charValue == .error
         }
         
-        return formToken(kind: .eof, with: "")
+        if quoteChar == "'" {
+            assert(!isMultilineString, "Single quoted string cannot have custom delimitor, nor multiline")
+        }
+        
+        if wasErroneous {
+            return formToken(kind: .unknown, from: tokStart)
+        }
+        
+        return formStringLiteralToken(tokStart: tokStart, isMultilineString: isMultilineString)
     }
     
     /// lexEscapedIdentifier:
@@ -818,5 +954,13 @@ public class Lexer {
         }
         
         return formToken(kind: .backtick, from: quote)
+    }
+    
+    /// Try to lex conflict markers by checking for the presence of the start and
+    /// end of the marker in diff3 or Perforce style respectively.
+    public func tryLexConflictMarker(eatNewline: Bool) -> Bool {
+        
+        // No end of conflict marker found.
+        return false
     }
 }

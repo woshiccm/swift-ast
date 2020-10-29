@@ -50,44 +50,6 @@ public enum TriviaPiece {
     case garbageText(String)
 }
 
-extension TriviaPiece: TextOutputStreamable {
-  /// Prints the provided trivia as they would be written in a source file.
-  ///
-  /// - Parameter stream: The stream to which to print the trivia.
-  public func write<Target>(to target: inout Target)
-    where Target: TextOutputStream {
-    func printRepeated(_ character: String, count: Int) {
-      for _ in 0..<count { target.write(character) }
-    }
-    switch self {
-    case let .spaces(count):
-      printRepeated(" ", count: count)
-    case let .tabs(count):
-      printRepeated("\t", count: count)
-    case let .verticalTabs(count):
-      printRepeated("\u{2B7F}", count: count)
-    case let .formfeeds(count):
-      printRepeated("\u{240C}", count: count)
-    case let .newlines(count):
-      printRepeated("\n", count: count)
-    case let .carriageReturns(count):
-      printRepeated("\r", count: count)
-    case let .carriageReturnLineFeeds(count):
-      printRepeated("\r\n", count: count)
-    case let .lineComment(text):
-      target.write(text)
-    case let .blockComment(text):
-      target.write(text)
-    case let .docLineComment(text):
-      target.write(text)
-    case let .docBlockComment(text):
-      target.write(text)
-    case let .garbageText(text):
-      target.write(text)
-    }
-  }
-}
-
 extension TriviaPiece: CustomDebugStringConvertible {
   /// Returns a description used by dump.
   public var debugDescription: String {
@@ -109,6 +71,10 @@ public struct Trivia {
   public static var zero: Trivia {
     return Trivia(pieces: [])
   }
+    
+    public func appendOrSquash(_ piece: TriviaPiece, length: Int) {
+        
+    }
 
   /// Creates a new `Trivia` by appending the provided `TriviaPiece` to the end.
   public func appending(_ piece: TriviaPiece) -> Trivia {
