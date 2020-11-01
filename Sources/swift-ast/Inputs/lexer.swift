@@ -13,6 +13,9 @@ let string = """
    three spaces
 """
 
-func test() {
+func test(a: Int) {
     
 }
+
+let a = 1
+let b = a + 2

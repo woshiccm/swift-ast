@@ -103,10 +103,19 @@ public class Lexer {
         case "%":
             return lexOperatorIdentifier()
         case "!":
+            if isLeftBound(tokStart) {
+                return formToken(kind: .exclamationMark, from: tokStart)
+            }
             return lexOperatorIdentifier()
         case "?":
+            if isLeftBound(tokStart) {
+                return formToken(kind: .postfixQuestionMark, from: tokStart)
+            }
             return lexOperatorIdentifier()
         case "<":
+            if scanner.peek == "#" {
+                return tryLexEditorPlaceholder()
+            }
             return lexOperatorIdentifier()
         case ">":
             return lexOperatorIdentifier()
@@ -956,11 +965,83 @@ public class Lexer {
         return formToken(kind: .backtick, from: quote)
     }
     
+    /// Kinds of conflict marker which the lexer might encounter.
+    enum ConflictMarkerKind {
+        /// A normal or diff3 conflict marker, initiated by at least 7 "<"s,
+        /// separated by at least 7 "="s or "|"s, and terminated by at least 7 ">"s.
+        case normal
+        /// A Perforce-style conflict marker, initiated by 4 ">"s,
+        /// separated by 4 "="s, and terminated by 4 "<"s.
+        case perforce
+    }
+    
+    /// Find the end of a version control conflict marker.
+    func findConflictEnd(cmk: ConflictMarkerKind) -> Bool {
+        let terminator = cmk == .perforce ? "<<<<\n" : ">>>>>>> "
+        let termLen = terminator.count
+        
+        // Get a reference to the rest of the buffer minus the length of the start
+        // of the conflict marker.
+        return true
+    }
+    
     /// Try to lex conflict markers by checking for the presence of the start and
     /// end of the marker in diff3 or Perforce style respectively.
     public func tryLexConflictMarker(eatNewline: Bool) -> Bool {
+        scanner.putback()
+        // Only a conflict marker if it starts at the beginning of a line.
+        if scanner.current != scanner.contentStart && scanner.peek != "\n" && scanner.peek != "\r" {
+            return false
+        }
+        
+        // Check to see if we have <<<<<<< or >>>>.
+        if !scanner.starts(with: "<<<<<<< ") && !scanner.starts(with: ">>>> ") {
+            return false
+        }
+        
+        let kind: ConflictMarkerKind = scanner.peek == "<" ? .normal : .perforce
+        
+        if findConflictEnd(cmk: kind) {
+            // Diagnose at the conflict marker, then jump ahead to the end.
+            
+            // Skip ahead to the end of the marker.
+            if !scanner.isAtEnd {
+                skipToEndOfLine(eatNewline: eatNewline)
+            }
+            return true
+        }
         
         // No end of conflict marker found.
         return false
+    }
+    
+    /// <#T##IndexPath#
+    public func tryLexEditorPlaceholder() -> Token {
+        assert(scanner.peekBack == "<" && scanner.peek == "#")
+        let tokStart = scanner.index(offsetBy: -1)
+        
+        var ptr = scanner
+        ptr.advance()
+        
+        while ptr.index(offsetBy: 1) < ptr.end {
+            if ptr.peek == "\n" {
+                continue
+            }
+            if ptr.peek == "<" && ptr.peekNext == "#" {
+                continue
+            }
+            if ptr.peek == "#" && ptr.peekNext == ">" {
+                // Found it. Flag it as error (or warning, if in playground mode) for the
+                // rest of the compiler pipeline and lex it as an identifier.
+                ptr.advance(by: 2)
+                scanner.rewind(to: ptr.current)
+                return formToken(kind: .identifier, from: tokStart)
+            }
+            
+            ptr.advance()
+        }
+        
+        // Not a well-formed placeholder.
+        return lexOperatorIdentifier()
     }
 }

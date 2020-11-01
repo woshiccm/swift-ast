@@ -9,7 +9,10 @@ func getInput(_ file: String) -> URL {
   return result
 }
 
-let lexer = Lexer(url: getInput("lexer.swift"))
+//let lexer = Lexer(url: getInput("lexer.swift"))
+
+let lexer = Lexer(url: URL(fileURLWithPath: "/Users/roy/Desktop/lexer.swift"))
+
 
 while true {
     let token = lexer.lexImpl()
