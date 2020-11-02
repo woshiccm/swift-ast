@@ -719,8 +719,128 @@ public class Lexer {
     /// This function performs brace and quote matching, keeping a stack of
     /// outstanding delimiters as it scans the string.
     func skipToEndOfInterpolatedExpression(isMultilineString: Bool) {
+        var openDelimiters: [UnicodeScalar] = []
+        var allowNewline: [Bool] = []
+        allowNewline.append(isMultilineString)
         
+        var inStringLiteral: Bool {
+            return openDelimiters.last == "\"" || openDelimiters.last == "'"
+        }
         
+        while !scanner.isAtEnd {
+            // This is a simple scanner, capable of recognizing nested parentheses and
+            // string literals but not much else.  The implications of this include not
+            // being able to break an expression over multiple lines in an interpolated
+            // string.  This limitation allows us to recover from common errors though.
+            //
+            // On success scanning the expression body, the real lexer will be used to
+            // relex the body when parsing the expressions.  We let it diagnose any
+            // issues with malformed tokens or other problems.
+            let char = scanner.advance()
+            switch char {
+            // String literals in general cannot be split across multiple lines;
+            // interpolated ones are no exception - unless multiline literals.
+            case "\n", "\r":
+                if allowNewline.last! {
+                    continue
+                }
+                // Will be diagnosed as an unterminated string literal.
+                return
+            case "\"", "'":
+                if !inStringLiteral {
+                    // Open string literal.
+                    openDelimiters.append(char)
+                    allowNewline.append(advanceIfMultilineDelimiter(curPtr: &scanner))
+                    continue
+                }
+                
+                // In string literal.
+
+                // Skip if it's an another kind of quote in string literal. e.g. "foo's".
+                if openDelimiters.last != scanner.peekBack {
+                    continue
+                }
+                
+                // Multi-line string can only be closed by '"""'.
+                if allowNewline.last! && !advanceIfMultilineDelimiter(curPtr: &scanner) {
+                    continue
+                }
+                
+                // Check whether we have equivalent number of '#'s.
+                
+                
+                // Close string literal.
+                _ = openDelimiters.popLast()
+                _ = allowNewline.popLast()
+            case "\\":
+                // We ignore invalid escape sequence here. They should be diagnosed in
+                // the real lexer functions.
+                if inStringLiteral {
+                    let char = scanner.advance()
+                    switch char {
+                    case "(":
+                        // Entering a recursive interpolated expression
+                        openDelimiters.append("(")
+                        continue
+                    case "\n", "\r":
+                        // Don't jump over newline/EOF due to preceding backslash.
+                        // Let the outer switch to handle it.
+                        scanner.putback()
+                        continue
+                    default:
+                        continue
+                    }
+                }
+            // Paren nesting deeper to support "foo = \((a+b)-(c*d)) bar".
+            case "(":
+                if !inStringLiteral {
+                    openDelimiters.append("(")
+                }
+                continue
+            case ")":
+                if openDelimiters.isEmpty {
+                    // No outstanding open delimiters; we're done.
+                    scanner.putback()
+                    return
+                } else if openDelimiters.last == "(" {
+                    // Pop the matching bracket and keep going.
+                    _ = openDelimiters.popLast()
+                    continue
+                } else {
+                    // It's a right parenthesis in a string literal.
+                    assert(inStringLiteral)
+                    continue
+                }
+            case "/":
+                if inStringLiteral {
+                    continue
+                }
+                
+                if scanner.peek == "*" {
+                    if skipToEndOfSlashStarComment() && !allowNewline.last! {
+                        // Multiline comment is prohibited in string literal.
+                        // Return the start of the comment.
+                        scanner.putback()
+                        return
+                    }
+                } else if scanner.peek == "/" {
+                    if !allowNewline.last! {
+                        // '//' comment is impossible in single line string literal.
+                        // Return the start of the comment.
+                        scanner.putback()
+                        return
+                    }
+                    // Advance to the end of the comment.
+                    if advanceToEndOfLine() {
+                        scanner.advance()
+                    }
+                }
+                continue
+            default:
+                // Normal token character.
+                continue
+            }
+        }
     }
     
     /// advanceIfMultilineDelimiter - Centralized check for multiline delimiter.
